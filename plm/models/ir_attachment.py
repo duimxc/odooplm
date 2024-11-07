@@ -277,7 +277,10 @@ class PlmDocument(models.Model):
         return list(set(result))
 
     @api.model
-    def getRelatedLyTree(self, doc_id):
+    def getRelatedLyTree(self, doc_id, optional_return_type=['3d']):
+        """
+        optional_return_type is implemented in future version of the plm
+        """
         out = []
         if not doc_id:
             logging.warning('Cannot get links from %r document' % (doc_id))
@@ -300,7 +303,9 @@ class PlmDocument(models.Model):
         return list(set(out))
     
     @api.model
-    def getRelatedRfTree(self, doc_id, recursion=True, evaluated=[]):
+    def getRelatedRfTree(self, doc_id, recursion=True, evaluated=False):
+        if not evaluated:
+            evaluated=[]
         out = []
         if not doc_id:
             logging.warning('Cannot get links from %r document' % (doc_id))
@@ -461,7 +466,7 @@ class PlmDocument(models.Model):
         defaults['writable'] = True
         newDocBrws = super(PlmDocument, self).copy(defaults)
         if newDocBrws:
-            newDocBrws.wf_message_post(body=_('Copied starting from : %s.' % previous_name))
+            newDocBrws.wf_message_post(body=_('Copied starting from : {previous_name}.'))
         for brwEnt in docBrwsList:
             documentRelation.create({
                 'parent_id': newDocBrws.id,
@@ -1162,22 +1167,6 @@ class PlmDocument(models.Model):
                 if dbthread.done==True and dbthread.error_message:
                     return False
         return True
-    
-    def open_related_dbthread(self):
-        plm_dbthread = self.env['plm.dbthread']
-        plm_dbthread_ids=[]
-        #
-        for ir_attachment_id in self:
-            search_name = "%s_%s" % (ir_attachment_id.engineering_document_name,ir_attachment_id.revisionid)
-            plm_dbthread_ids = plm_dbthread.search([('documement_name_version','=',search_name)])
-        #
-        return {'name': _('Saving Error'),
-                'res_model': 'plm.dbthread',
-                'view_type': 'form',
-                'view_mode': 'tree',
-                'type': 'ir.actions.act_window',
-                'domain': [('id', 'in', plm_dbthread_ids.ids)],
-                'context': {}}
           
     def _attachment_revision_count(self):
         """
@@ -1293,6 +1282,7 @@ class PlmDocument(models.Model):
         return self._data_check_files(outIds, listedFiles, forceFlag, False, hostname, hostpws)
 
     def is2D(self):
+        self.ensure_one()
         for docBrws in self:
             if docBrws.document_type.upper() == '2D':
                 return True
@@ -1300,6 +1290,7 @@ class PlmDocument(models.Model):
         return False
 
     def is3D(self):
+        self.ensure_one()
         for docBrws in self:
             if docBrws.document_type.upper() == '3D':
                 return True
@@ -1380,7 +1371,7 @@ class PlmDocument(models.Model):
         return action
 
     
-    def GetRelatedDocs(self, default=None):
+    def GetRelatedDocs(self, default=None, getBrowse=False):
         """
             Extract documents related to current one(s) (layouts, referred models, etc.)
         """
@@ -1394,11 +1385,14 @@ class PlmDocument(models.Model):
             #    read_docs.extend(self.getRelatedLyTree(rfModel))
         read_docs = list(set(read_docs))
         for document in self.browse(read_docs).sorted('document_type', reverse=True): # 3d before 2d
-            related_documents.append([document.id,
-                                      document.engineering_document_name,
-                                      '' if document.preview is None else document.preview,
-                                      document.revisionid,
-                                      document.description])
+            if getBrowse:
+                related_documents.append(document)
+            else:
+                related_documents.append([document.id,
+                                          document.engineering_document_name,
+                                          '' if document.preview is None else document.preview,
+                                          document.revisionid,
+                                          document.description])
         return related_documents
 
     @api.model
@@ -1469,6 +1463,14 @@ class PlmDocument(models.Model):
                     checkOutBrws.hostname)
         return ('', False, '', '')
 
+    def _getCheckOutUser(self):
+        for ir_attachment_id in self:
+            checkoutType = self.env['plm.checkout']
+            checkoutBrwsList = checkoutType.search([('documentid', '=', ir_attachment_id.id)])
+            for checkOutBrws in checkoutBrwsList:
+                return checkOutBrws.userid
+        return self.env['res.users']
+    
     @api.model
     def _file_delete(self, fname):
         """
@@ -1485,6 +1487,12 @@ class PlmDocument(models.Model):
         """
         ctx = self.env.context
         eng_code = ctx.get('product_attrs', {}).get("engineering_code") or ctx.get('engineering_code', '')
+        #
+        # this check is to solve some issiued on the client call
+        #
+        if isinstance(documentName, list):
+            documentName=documentName[0]
+        #
         if eng_code:
             documentName = eng_code
         nextDocNum = self.env['ir.sequence'].next_by_code('ir.attachment.progress')
@@ -1888,6 +1896,12 @@ class PlmDocument(models.Model):
             for linkedBrws in linkedDocEnv.search([('child_id', '=', docBrws.id), ('parent_id', '=', docBrws.id)]):
                 linkedBrws.unlink()
 
+    @api.model
+    def getIdFromAttrs(self, attrs):
+        for ir_attachment in self.getDocumentBrws(json.loads(attrs)):
+            return ir_attachment.id
+        return False
+
     def getDocumentBrws(self, docVals):
         """
         function to convert dict client info into attachment browse record
@@ -2111,7 +2125,7 @@ class PlmDocument(models.Model):
         ids = super(models.Model, self)._search(args, offset=offset, limit=limit, order=order,
                                                 count=False, access_rights_uid=access_rights_uid)
 
-        if self.env.user._is_admin() or self.env.user._is_superuser():
+        if self.env.user and (self.env.user._is_admin() or self.env.user._is_superuser()):
             # rules do not apply for the superuser
             return len(ids) if count else ids
 
@@ -2307,6 +2321,11 @@ class PlmDocument(models.Model):
 
     @api.model
     def GetProductDocumentId(self, clientArgs):
+        product_product_id, plm_document_id = self._GetproductDocumentID(clientArgs)
+        return (False if not product_product_id else product_product_id.id, 
+                False if not plm_document_id else plm_document_id.id)
+
+    def _GetproductDocumentID(self, clientArgs):
         componentAtts, documentAttrs = clientArgs
         product_product_id = False
         plm_document_id = False
@@ -2315,17 +2334,16 @@ class PlmDocument(models.Model):
         if engineering_code:
             for product_product in self.env['product.product'].search([('engineering_code', '=', engineering_code),
                                                                       ('engineering_revision', '=', engineering_revision)]):
-                product_product_id = product_product.id
+                product_product_id = product_product
                 break
         document_name = documentAttrs.get('engineering_document_name')
         document_revision = documentAttrs.get('revisionid', 0)
         if document_name:
             for plm_document in self.env['ir.attachment'].search([('engineering_document_name', '=', document_name),
                                                                  ('revisionid', '=', document_revision)]):
-                plm_document_id = plm_document.id
+                plm_document_id = plm_document
                 break
         return product_product_id, plm_document_id
-
 
     def checkNewer(self):
         for document in self:
@@ -2766,4 +2784,193 @@ class PlmDocument(models.Model):
                 out.append(doc_id)
         return json.dumps(out)
     
+    def print_Parent_Structure(self):
+        #<record id="account_invoices" model="ir.actions.report"> 
+        action = self.env.ref('plm.action_report_parents_structure').report_action(self)
+        action.update({'close_on_report_download': True})
+        return action
+
+    def print_Document_Doc_Structure(self):
+        action = self.env.ref('plm.action_report_doc_structure').report_action(self)
+        action.update({'close_on_report_download': True})
+        return action
+    #
+    # client workflow functions
+    #
+    @api.model
+    def action_from_draft_to_draf(self):
+        pass
+    
+    def getDocBom(self,
+                  level=0,
+                  recursion=True,
+                  report_obj=None):
+        for attachment_id in self:
+            children_list = []
+            if recursion and attachment_id.document_type.upper() not in ['2D']:
+                children = attachment_id.getRelatedOneLevelLinks(attachment_id.id, ['RfTree', 'LyTree', 'HiTree'])
+                for child_id in children:
+                    attachment_child = self.browse(child_id)
+                    child_dict = attachment_child.getDocBom(level + 1,
+                                                            recursion=False,
+                                                            report_obj=report_obj)
+                    children_list.append(child_dict)
+            product_product_id=None
+            for product_product_id in attachment_id.linkedcomponents:
+                break
+            vals = {'id': attachment_id,
+                    'product_id': product_product_id,
+                    'level': level, 
+                    'report_obj': report_obj, 
+                    'children': children_list}
+            break
+        return vals
+
+    @api.model
+    def sent_check_out_requests(self, document_id):
+        """
+        create an activity on document asking to check-out the document
+        """
+        for ir_attachment_id in self.browse([document_id]):
+            _id, action, _message = ir_attachment_id.canCheckOut1()
+            if action=='check_out_by_user':
+                res_user_id = ir_attachment_id._getCheckOutUser()
+                message = _(f"User {self.env.user.display_name} request this document for make some modification")
+                todos = {'res_id': ir_attachment_id.id,
+                         'res_model_id': self.env['ir.model'].search([('model', '=', self._name)]).id,
+                         'user_id': res_user_id.id,
+                         'summary': _("Check-In request"),
+                         'note': message,
+                         'activity_type_id': self.env.ref("plm.mail_activity_check_out_request").id,
+                         'date_deadline': datetime.today().date(),
+                         }
+                self.env['mail.activity'].create(todos)
+        return True
+    
+    def related_not_update(self):
+        for attachment_id in self:
+            relation_ids = self.env['ir.attachment.relation'].search(["|",('parent_id','=',attachment_id.id),
+                                                                      ('child_id','=',attachment_id.id),
+                                                                      ('link_kind', '=', 'LyTree')])
+            return {'name': _('Attachment Relations.'),
+                    'res_model': 'ir.attachment.relation',
+                    'view_type': 'form',
+                    'view_mode': 'kanban,tree,form',
+                    'type': 'ir.actions.act_window',
+                    'domain': [('id', 'in', relation_ids.ids)],
+                    'context': {}}
+            
+    def open_related_dbthread(self):
+        plm_dbthread = self.env['plm.dbthread']
+        plm_dbthread_ids=[]
+        #
+        for ir_attachment_id in self:
+            search_name = f"{ir_attachment_id.engineering_document_name}_{ir_attachment_id.revisionid}"
+            plm_dbthread_ids = plm_dbthread.search([('documement_name_version','=',search_name)])
+        #
+        return {'name': _('Saving Error'),
+                'res_model': 'plm.dbthread',
+                'view_type': 'form',
+                'view_mode': 'tree',
+                'type': 'ir.actions.act_window',
+                'domain': [('id', 'in', plm_dbthread_ids.ids)],
+                'context': {}}
+
+
+    @api.model
+    def getCloneStructure(self,
+                          args):
+        #
+        SUPPORT_MAIN_PRODUCT_ATTRIBUTES = [
+            'CONFIGURATION_NAME',
+            'CONFIGURATIONS',
+            'INTEGRATION_FILE_TYPE',
+            ]
+        #
+        def getProduct_dict(product_product_id):
+            return {
+                    'engineering_code': product_product_id.engineering_code,
+                    'engineering_revision': product_product_id.engineering_revision,
+                    'name':product_product_id.name,
+                    'id':product_product_id.id
+                    }
+        json_main_root_attributes, cloneRelatedDocuments = args
+        #
+        def get_clone_info_attr(doc_id, product_product_id=None):
+            ir_attachment=self.browse(doc_id)
+            if product_product_id:
+                product_dict=getProduct_dict(product_product_id)
+            else:
+                product_dict={}
+                for product_product_id in ir_attachment.linkedcomponents:
+                    product_dict=getProduct_dict(product_product_id)
+                    break
+            return {'document':{
+                                'engineering_document_name': ir_attachment.engineering_document_name,
+                                'revisionid': ir_attachment.revisionid,
+                                'name':ir_attachment.name,
+                                'id':ir_attachment.id,
+                                'document_type':ir_attachment.document_type
+                                },
+                    'product':product_dict
+                }
+        #
+        out = {'MAIN':{},
+               'RF':[],
+               'LF':[]}
+        main_root_attributes = json.loads(json_main_root_attributes)
+        product_product_id, attachment_id = self._GetproductDocumentID(tuple(main_root_attributes.values()))
+        #
+        if attachment_id:
+            #
+            doc_ids_2d=[]
+            #
+            main_parent_attrs = get_clone_info_attr(attachment_id.id, product_product_id)
+            out['MAIN']=main_parent_attrs
+            for k in SUPPORT_MAIN_PRODUCT_ATTRIBUTES:
+                out['MAIN']['product'][k]=main_root_attributes.get('product',{}).get(k,'')
+            #
+            for doc_id in self.getRelatedRfTree(attachment_id.id):
+                sub_attrs = get_clone_info_attr(doc_id)
+                out['RF'].append((main_parent_attrs,
+                                  sub_attrs))
+                for doc_id_2d in self.getRelatedLyTree(doc_id,
+                                                optional_return_type=['2d']):
+                    doc_ids_2d.append((sub_attrs, doc_id_2d))
+            #
+            for doc_id_2d in self.getRelatedLyTree(attachment_id.id,
+                                                   optional_return_type=['2d']):
+                doc_ids_2d.append((main_parent_attrs, doc_id_2d))        
+            #
+            for parent_attrs, doc_id in doc_ids_2d:
+                out['LF'].append((parent_attrs,
+                                  get_clone_info_attr(doc_id)))
+        #
+        return json.dumps(out)
+
+    @api.model
+    def GetCloneDocumentValues(self, args):
+        """
+            return the new attributes to be used for cloning the document
+        """
+        _old_product_attrs, old_attachment_attrs, new_product_attrs = args
+        out_attachment_value = json.loads(old_attachment_attrs)
+        new_product_attrs = json.loads(new_product_attrs)
+        if hasattr(self, "customGetCloneDocumentValues"):
+            #
+            # If you implement the customGetCloneDocumentValues this call will be used to customize the value of the new cloned document from the client clone action
+            #
+            out_attachment_value=self.customGetCloneDocumentValues(out_attachment_value)
+        else:
+            #
+            out_attachment_value['engineering_document_name'] = f"{new_product_attrs['engineering_code']}-{self.env['ir.sequence'].next_by_code('ir.attachment.progress')}"
+            out_attachment_value['revisionid']=0
+            #
+            _, exte = os.path.splitext(out_attachment_value['name'])
+            out_attachment_value['name'] = f"{out_attachment_value['engineering_document_name']}{exte}"
+        #
+        del out_attachment_value['id']
+        #
+        return json.dumps(out_attachment_value)
+
 # vim:expandtab:smartindent:tabstop=4:softtabstop=4:shiftwidth=4:

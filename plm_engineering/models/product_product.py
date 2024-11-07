@@ -37,7 +37,11 @@ class ProductProductExtension(models.Model):
     _inherit = 'product.product'
 
     @api.model
-    def create_bom_from_ebom(self, obj_product_product_brw, new_bom_type, summarize=False, migrate_custom_lines=True):
+    def create_bom_from_ebom(self,
+                             obj_product_product_brw,
+                             new_bom_type,
+                             summarize=False,
+                             migrate_custom_lines=True):
         """
             create a new bom starting from ebom
         """
@@ -74,6 +78,7 @@ class ProductProductExtension(models.Model):
                                          ('type', '=', new_bom_type)], order='engineering_revision DESC', limit=1)
         if bom_brws_list:
             for bom_brws in bom_brws_list:
+                
                 for bom_line in bom_brws.bom_line_ids:
                     self.create_bom_from_ebom(bom_line.product_id, new_bom_type, summarize)
                 break
@@ -237,7 +242,7 @@ class ProductTemporaryNormalBom(osv.osv.osv_memory):
                 line_messages_list = product_product_type_object.create_bom_from_ebom(
                     product_browse, 'normal',
                     obj_brws.summarize,
-                    migrate_custom_lines
+                    migrate_custom_lines,
                 )
                 if line_messages_list:
                     out_mess = ''
