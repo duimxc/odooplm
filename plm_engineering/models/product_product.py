@@ -74,6 +74,9 @@ class ProductProductExtension(models.Model):
         if new_bom_type not in ['normal', 'phantom']:
             raise UserError(_("Could not convert source bom to %r" % new_bom_type))
         product_template_id = obj_product_product_brw.product_tmpl_id.id
+        if bom_type.search_count([('product_tmpl_id', '=', product_template_id),
+                                         ('type', '=', 'phantom')]):
+            return []
         bom_brws_list = bom_type.search([('product_tmpl_id', '=', product_template_id),
                                          ('type', '=', new_bom_type)], order='engineering_revision DESC', limit=1)
         if bom_brws_list:
@@ -239,6 +242,12 @@ class ProductTemporaryNormalBom(osv.osv.osv_memory):
                                                            ('type', '=', 'normal')])
                 if obj_boms:
                     raise UserError(_("Normal BoM for Part '%s' and revision '%s' already exists." % (obj_boms.product_tmpl_id.engineering_code, obj_boms.product_tmpl_id.engineering_revision)))
+                
+                if obj_brws.env['mrp.bom'].search_count([('product_tmpl_id', '=', id_template),
+                                                                 ('type', '=', 'phantom')]):
+                    raise UserError(_("""Normal BoM for Part '%s' and revision '%s' have a kit bom present.\n"""
+                                      """If you whant to create the normal bom please delete the kit bom first !
+                                        """ % (product_browse.engineering_code, obj_boms.product_tmpl_id.engineering_revision)))
                 line_messages_list = product_product_type_object.create_bom_from_ebom(
                     product_browse, 'normal',
                     obj_brws.summarize,

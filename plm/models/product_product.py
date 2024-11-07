@@ -411,7 +411,7 @@ class PlmComponent(models.Model):
                     }
 
     @api.model
-    def _getChildrenBom(self, component, level=0, currlevel=0, bom_type=False):
+    def _getChildrenBom(self, product_product_id, level=0, currlevel=0, bom_type=False):
         """
             Return a flat list of each child, listed once, in a Bom ( level = 0 one level only, level = 1 all levels)
         """
@@ -419,17 +419,17 @@ class PlmComponent(models.Model):
         bufferdata = []
         if level <= currlevel and level > 0:
             return bufferdata
-        for bomid in component.product_tmpl_id.bom_ids:
+        for mrp_bom_id in product_product_id.product_tmpl_id.bom_ids:
             if bom_type:
-                if bomid.type != bom_type:
+                if mrp_bom_id.type != bom_type:
                     continue
-            for bomline in bomid.bom_line_ids:
-                children = self._getChildrenBom(component=bomline.product_id,
-                                                level=level,
-                                                currlevel=currlevel + 1,
-                                                bom_type=bom_type)
-                bufferdata.extend(children)
-                bufferdata.append(bomline.product_id.id)
+            for mrp_bom_line_id in mrp_bom_id.bom_line_ids:
+                children_product_product_id = self._getChildrenBom(product_product_id=mrp_bom_line_id.product_id,
+                                                                   level=level,
+                                                                   currlevel=currlevel + 1,
+                                                                   bom_type=bom_type)
+                bufferdata.extend(children_product_product_id)
+                bufferdata.append(mrp_bom_line_id.product_id.id)
         result.extend(bufferdata)
         return list(set(result))
 
@@ -664,18 +664,12 @@ class PlmComponent(models.Model):
                 if ir_attachment_id.is3D():
                     for lay_attachment_id in ir_attachment_id.getRelatedLyTree(ir_attachment_id.id):
                         if lay_attachment_id not in docIDs:
-                            self._checkWorkflow(attachment.browse(lay_attachment_id),
-                                                to_state,
-                                                allowed_state
-                                                )
+                            _checkWorkflow(attachment.browse(lay_attachment_id))
                             #
                             raw_doc_ids = ir_attachment_id.getRelatedRfTree(ir_attachment_id.id,
                                                                             recursion=True)
                             #
-                            self._checkWorkflow(attachment.browse(raw_doc_ids),
-                                                to_state,
-                                                allowed_state
-                                                )
+                            _checkWorkflow(attachment.browse(raw_doc_ids))
         _checkWorkflow(linkeddocuments)
         return list(set(docIDs)), docInError
 
